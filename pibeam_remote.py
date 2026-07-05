@@ -172,7 +172,9 @@ class SerialLink:
                         continue  # REPL noise etc.
                     if msg.get("evt") == "pong" and self.status != "connected":
                         self.status = "connected"
-                        self.events.put({"evt": "_status", "status": "connected"})
+                        self.events.put({"evt": "_status",
+                                         "status": "connected",
+                                         "fw": msg.get("fw", "?")})
                     self.events.put(msg)
 
 
@@ -771,7 +773,7 @@ class App(tk.Tk):
             while True:
                 msg = self.link.events.get_nowait()
                 if msg.get("evt") == "_status":
-                    self.update_conn(msg["status"])
+                    self.update_conn(msg["status"], msg.get("fw"))
                 elif self.learn_dialog is not None and \
                         self.learn_dialog.winfo_exists():
                     self.learn_dialog.handle_event(msg)
@@ -785,6 +787,11 @@ class App(tk.Tk):
                     else:
                         self.set_status(f"Failed to send {label}: "
                                         f"{msg.get('msg', 'unknown error')}")
+                elif msg.get("evt") == "error":
+                    # Unsolicited error (e.g. selftest on old firmware
+                    # replying "unknown cmd") - never swallow it silently.
+                    self.set_status(
+                        f"PiBeam error: {msg.get('msg', 'unknown error')}")
         except queue.Empty:
             pass
         # If a send confirmation never arrives (device unplugged mid-send,
@@ -830,9 +837,10 @@ class App(tk.Tk):
                              "work.")
         messagebox.showinfo(APP_NAME, "\n".join(lines), parent=self)
 
-    def update_conn(self, status):
+    def update_conn(self, status, fw=None):
         if status == "connected":
-            self.conn_lbl.config(text="\u25cf PiBeam: connected",
+            ver = f" (fw {fw})" if fw else ""
+            self.conn_lbl.config(text=f"\u25cf PiBeam: connected{ver}",
                                  fg="#2aa22a")
         else:
             self.conn_lbl.config(text="\u25cf PiBeam: disconnected "
