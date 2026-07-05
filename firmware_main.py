@@ -7,7 +7,7 @@
 # from the IR receiver.
 #
 # PROTOCOL (host -> device), one JSON object per line:
-#   {"cmd": "ping"}                     -> {"evt":"pong","fw":"2.4"}
+#   {"cmd": "ping"}                     -> {"evt":"pong","fw":"2.5"}
 #   {"cmd": "learn"}                    -> {"evt":"learn_start"} then either
 #                                          {"evt":"captured","data":[...]} or
 #                                          {"evt":"learn_timeout"}
@@ -175,9 +175,28 @@ class _RP2_RMT:
 
 _rmt = _RP2_RMT(Pin(IR_TX_PIN), CARRIER_HZ, CARRIER_DUTY_PCT)
 
+# Maximize the TX pin's pad drive strength. RP2040 GPIO pads default to
+# 4 mA; they support up to 12 mA. If the IR LED is driven directly from
+# the GPIO, this roughly triples LED current (= radiated power). Done by
+# writing the pad control register directly (bits [5:4] = drive select,
+# 0b11 = 12 mA); MicroPython's rp2 Pin API doesn't expose this.
+import machine as _machine
+_PADS_BANK0 = 0x4001C000
+_pad_addr = _PADS_BANK0 + 4 + 4 * IR_TX_PIN
+_machine.mem32[_pad_addr] = (_machine.mem32[_pad_addr] & ~(0b11 << 4)) \
+                            | (0b11 << 4)
+
+SEND_REPEATS = 2        # real remotes never send a frame only once
+REPEAT_GAP_MS = 40      # inter-frame gap between repeats
+
 
 def transmit_ir(timings):
-    return _rmt.send_blocking(timings)
+    for i in range(SEND_REPEATS):
+        if i:
+            utime.sleep_ms(REPEAT_GAP_MS)
+        if not _rmt.send_blocking(timings):
+            return False
+    return True
 
 
 # ===================== Interrupt-driven precise capture ====================
@@ -265,7 +284,7 @@ def handle(line):
 
     try:
         if cmd == "ping":
-            reply({"evt": "pong", "fw": "2.4"})
+            reply({"evt": "pong", "fw": "2.5"})
 
         elif cmd == "learn":
             reply({"evt": "learn_start"})
@@ -306,7 +325,8 @@ def handle(line):
             else:
                 _edge_count = 0
                 _capturing = True
-                ok = transmit_ir(code)
+                # Single frame (no repeats) so heard vs sent compares 1:1.
+                ok = _rmt.send_blocking(code)
                 utime.sleep_ms(30)          # let trailing edges land
                 _capturing = False
                 n = _edge_count
