@@ -1,0 +1,65 @@
+==============================================================
+ REMOTE SITE - POST-INSTALL SETUP NOTES
+==============================================================
+
+Everything below assumes the install script finished and the
+machine has been rebooted once.
+
+--------------------------------------------------------------
+ 1. TAILSCALE (do this first - it is your remote lifeline)
+--------------------------------------------------------------
+ a. Open a terminal (Ctrl+Alt+T).
+ b. Run:   sudo tailscale up
+ c. A login URL is printed. Open it in Firefox on this machine
+    (or any device) and sign in to your tailnet account.
+ d. Confirm it worked:   tailscale ip -4
+    Write that 100.x.x.x address down - it is how you will
+    reach this machine from anywhere.
+ e. Optional but recommended for unattended sites: in the
+    Tailscale admin console, disable key expiry for this
+    machine so it never silently drops off the tailnet.
+
+--------------------------------------------------------------
+ 2. NOMACHINE (remote desktop)
+--------------------------------------------------------------
+ a. NoMachine's server starts automatically at boot; there is
+    nothing to launch at the remote site.
+ b. On YOUR machine, install the NoMachine client and add a
+    new connection to the Tailscale IP from step 1d,
+    port 4000 (NX protocol).
+ c. Log in with this machine's Linux username/password.
+ d. First connection: accept the host key prompt. You should
+    see this desktop.
+ e. Tip: in NoMachine display settings, enable "resize remote
+    screen" for a smoother remote-desktop experience.
+
+--------------------------------------------------------------
+ 3. PIBEAM / UNIVERSAL REMOTE
+--------------------------------------------------------------
+ a. Plug the PiBeam into any USB port.
+ b. Launch "Universal Remote" from the desktop.
+ c. Status bar bottom-left should show a green
+    "PiBeam: connected" dot within a few seconds.
+ d. To clone a config from another site:
+    File -> Import Config, pick the exported .json.
+ e. Full usage guide: /opt/pibeam/README.md
+
+--------------------------------------------------------------
+ 4. CAMERA CHECK
+--------------------------------------------------------------
+ a. Launch "View Cam" (guvcview) to verify the camera feed.
+ b. If no device is found, check detection with:
+       v4l2-ctl --list-devices
+
+--------------------------------------------------------------
+ TROUBLESHOOTING QUICK HITS
+--------------------------------------------------------------
+ * Universal Remote says disconnected: reseat the PiBeam USB,
+   confirm your user is in the dialout group:  groups
+   (requires the post-install reboot to take effect)
+ * Can't reach the site remotely: verify Tailscale is up on
+   both ends:  tailscale status
+ * NoMachine connects but black screen: make sure a user is
+   logged into the local desktop session, or enable the
+   NoMachine virtual display in its server settings.
+==============================================================
