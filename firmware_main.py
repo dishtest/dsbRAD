@@ -7,7 +7,7 @@
 # from the IR receiver.
 #
 # PROTOCOL (host -> device), one JSON object per line:
-#   {"cmd": "ping"}                     -> {"evt":"pong","fw":"2.1"}
+#   {"cmd": "ping"}                     -> {"evt":"pong","fw":"2.2"}
 #   {"cmd": "learn"}                    -> {"evt":"learn_start"} then either
 #                                          {"evt":"captured","data":[...]} or
 #                                          {"evt":"learn_timeout"}
@@ -96,11 +96,12 @@ class _RP2_RMT:
         self.pwm.freq(freq)
         self.pwm.duty_u16(0)
         self.on_duty = int(0xFFFF * duty_pct // 100)
-        # IRQ k fires at the END of interval k. Interval 1 is a MARK
-        # (carrier ON, set before the SM starts), so IRQ 1 (count=0) must
-        # switch OFF, IRQ 2 back ON, alternating: (OFF, ON) indexed by
-        # count & 1.
-        self.duty_levels = (0, self.on_duty)
+        # PIO instruction order is: pull duration -> RAISE IRQ -> delay.
+        # So each IRQ fires at the START of its interval (the first one
+        # ~2us after the SM starts). Interval 1 is a MARK, so IRQ 1
+        # (count=0) must switch the carrier ON, IRQ 2 OFF, alternating:
+        # (ON, OFF) indexed by count & 1.
+        self.duty_levels = (self.on_duty, 0)
         # hard=True: toggle the carrier the instant the PIO interval ends,
         # not whenever the soft-IRQ scheduler gets around to it. Soft
         # scheduling latency (up to ~ms) is longer than typical IR
@@ -135,9 +136,10 @@ class _RP2_RMT:
         self.ptr = 0
         self.count = 0
         self.done_evt = False
-        # Interval 1 is a MARK: carrier must already be ON when the SM
-        # starts timing it. The first IRQ (end of interval 1) turns it off.
-        self.pwm.duty_u16(self.on_duty)
+        # Carrier starts OFF; the first IRQ (fires at the start of
+        # interval 1, ~2us after activation) switches it ON for the
+        # first mark.
+        self.pwm.duty_u16(0)
         self.sm.active(1)
         n = min(4, len(arr))
         for i in range(n):
@@ -247,7 +249,7 @@ def handle(line):
 
     try:
         if cmd == "ping":
-            reply({"evt": "pong", "fw": "2.1"})
+            reply({"evt": "pong", "fw": "2.2"})
 
         elif cmd == "learn":
             reply({"evt": "learn_start"})
