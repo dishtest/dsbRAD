@@ -16,7 +16,7 @@
 set -u
 
 # ------------------------- EDIT THESE BEFORE PUBLISHING ----------------------
-RAW_BASE="https://raw.githubusercontent.com/YOURUSER/YOURREPO/main"
+RAW_BASE="https://raw.githubusercontent.com/dishtest/dsbRAD/main"
 # NoMachine pinned fallback (verify current version at nomachine.com/download)
 NOMACHINE_URL="https://download.nomachine.com/download/9.3/Linux/nomachine_9.3.7_1_amd64.deb"
 # -----------------------------------------------------------------------------
