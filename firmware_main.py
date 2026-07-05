@@ -7,7 +7,7 @@
 # from the IR receiver.
 #
 # PROTOCOL (host -> device), one JSON object per line:
-#   {"cmd": "ping"}                     -> {"evt":"pong","fw":"2.2"}
+#   {"cmd": "ping"}                     -> {"evt":"pong","fw":"2.3"}
 #   {"cmd": "learn"}                    -> {"evt":"learn_start"} then either
 #                                          {"evt":"captured","data":[...]} or
 #                                          {"evt":"learn_timeout"}
@@ -62,7 +62,7 @@ IR_TX_PIN = 0           # GP0 - IR Transmitter (per sbcshop PiBeam pinout table)
 IR_RX_PIN = 1           # GP1 - IR Receiver (per sbcshop PiBeam pinout table)
 
 CARRIER_HZ = 38000      # standard consumer IR carrier
-CARRIER_DUTY_PCT = 33   # measured duty ratio sbcshop use for NEC-style playback
+CARRIER_DUTY_PCT = 50   # raised from 33% for stronger radiated output
 MAX_EDGES = 300         # max mark/space segments captured per code
 FRAME_END_GAP_US = 15000    # idle gap (us) that terminates a capture
 LEARN_TIMEOUT_MS = 15000    # give up learning after 15 s of no signal
@@ -249,7 +249,7 @@ def handle(line):
 
     try:
         if cmd == "ping":
-            reply({"evt": "pong", "fw": "2.2"})
+            reply({"evt": "pong", "fw": "2.3"})
 
         elif cmd == "learn":
             reply({"evt": "learn_start"})
@@ -276,6 +276,34 @@ def handle(line):
                 reply({"evt": "sent"})
             else:
                 reply({"evt": "error", "msg": "transmit timed out"})
+
+        elif cmd == "selftest":
+            # Loopback: capture our own transmission with the onboard
+            # receiver (hold a reflector ~5-10 cm in front of the device,
+            # or rely on direct bleed - TX and RX are adjacent). Returns
+            # both what we intended to send and what the receiver heard,
+            # so replay fidelity can be verified end-to-end.
+            global _edge_count, _capturing
+            code = msg.get("data") or last_capture
+            if not code:
+                reply({"evt": "error", "msg": "no code to self-test"})
+            else:
+                _edge_count = 0
+                _capturing = True
+                ok = transmit_ir(code)
+                utime.sleep_ms(30)          # let trailing edges land
+                _capturing = False
+                n = _edge_count
+                heard = []
+                for i in range(n - 1):
+                    heard.append(utime.ticks_diff(_edge_times[i + 1],
+                                                  _edge_times[i]))
+                reply({"evt": "selftest",
+                       "tx_ok": ok,
+                       "sent_edges": len(code),
+                       "heard_edges": len(heard),
+                       "sent": code,
+                       "heard": heard})
 
         else:
             reply({"evt": "error", "msg": "unknown cmd"})

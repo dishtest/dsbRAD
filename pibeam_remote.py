@@ -587,6 +587,8 @@ class RemotePanel(ttk.Frame):
                           command=lambda: self.learn_into(cfg))
             m.add_command(label="Clear Stored Code",
                           command=lambda: self.clear_code(cfg))
+            m.add_command(label="Self-Test (loopback)",
+                          command=lambda: self.selftest(cfg))
         else:
             m.add_command(label="Learn New Code",
                           command=lambda: self.learn_into(cfg))
@@ -612,6 +614,20 @@ class RemotePanel(ttk.Frame):
         cfg["code"] = None
         self.app.save()
         self.rebuild()
+
+    def selftest(self, cfg):
+        if self.app.link.status != "connected":
+            messagebox.showwarning(APP_NAME, "PiBeam is not connected.",
+                                   parent=self.app)
+            return
+        messagebox.showinfo(
+            APP_NAME,
+            "Hold something reflective (paper, your palm) about 5-10 cm in "
+            "front of the PiBeam, then click OK.\n\nThe device will "
+            "transmit this button's code and listen to itself with its own "
+            "IR receiver.", parent=self.app)
+        self.app.link.send({"cmd": "selftest", "data": cfg["code"]})
+        self.app.set_status("Running loopback self-test...")
 
     def update_button(self, r, s):
         cfg = self.remote["rows"][r]["buttons"][s]
@@ -759,6 +775,8 @@ class App(tk.Tk):
                 elif self.learn_dialog is not None and \
                         self.learn_dialog.winfo_exists():
                     self.learn_dialog.handle_event(msg)
+                elif msg.get("evt") == "selftest":
+                    self._show_selftest_result(msg)
                 elif msg.get("evt") in ("sent", "error") and self._pending_send:
                     label, _ = self._pending_send
                     self._pending_send = None
@@ -777,6 +795,40 @@ class App(tk.Tk):
             self._pending_send = None
             self.set_status(f"No response from PiBeam for: {label}")
         self.after(100, self.poll_events)
+
+    def _show_selftest_result(self, msg):
+        sent = msg.get("sent") or []
+        heard = msg.get("heard") or []
+        lines = [f"Transmit completed: {msg.get('tx_ok')}",
+                 f"Edges sent: {len(sent)}   Edges heard: {len(heard)}"]
+        if not heard:
+            lines.append("\nThe receiver heard NOTHING. Either the "
+                         "reflector wasn't close enough, or the "
+                         "transmitter output is too weak to register "
+                         "even at point-blank range.")
+        else:
+            n = min(len(sent), len(heard))
+            diffs = [heard[i] - sent[i] for i in range(n)]
+            avg = sum(diffs) / n
+            worst = max(diffs, key=abs)
+            lines.append(f"\nCompared first {n} intervals:")
+            lines.append(f"  average deviation: {avg:+.0f} us")
+            lines.append(f"  worst deviation:   {worst:+d} us")
+            if len(heard) < len(sent) * 0.9:
+                lines.append("\nSignificantly fewer edges heard than "
+                             "sent - parts of the frame are being lost "
+                             "in transmission.")
+            elif abs(avg) < 100 and abs(worst) < 250:
+                lines.append("\nReplay fidelity looks GOOD - the signal "
+                             "in the air matches the stored code. If "
+                             "devices still don't respond, suspect "
+                             "carrier frequency or transmit power/"
+                             "range, not the data.")
+            else:
+                lines.append("\nTimings are drifting between storage "
+                             "and air - transmit-side timing needs "
+                             "work.")
+        messagebox.showinfo(APP_NAME, "\n".join(lines), parent=self)
 
     def update_conn(self, status):
         if status == "connected":
