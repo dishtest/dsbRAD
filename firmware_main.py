@@ -7,7 +7,7 @@
 # from the IR receiver.
 #
 # PROTOCOL (host -> device), one JSON object per line:
-#   {"cmd": "ping"}                     -> {"evt":"pong","fw":"2.3"}
+#   {"cmd": "ping"}                     -> {"evt":"pong","fw":"2.4"}
 #   {"cmd": "learn"}                    -> {"evt":"learn_start"} then either
 #                                          {"evt":"captured","data":[...]} or
 #                                          {"evt":"learn_timeout"}
@@ -114,13 +114,21 @@ class _RP2_RMT:
         self.done_evt = False
 
     def _on_irq(self, pio):
-        # Alternate the carrier on/off in step with each PIO-timed interval.
-        self.pwm.duty_u16(self.duty_levels[self.count & 1])
-        self.count += 1
-        if self.ptr < len(self.arr):
-            self.sm.put(self.arr[self.ptr])
-            self.ptr += 1
-        else:
+        # Each IRQ marks the START of one interval. Set the carrier state
+        # for this interval, feed the next entry into the FIFO if any
+        # remain, and declare done only when every interval has actually
+        # begun playing (count), not merely been queued (ptr) - otherwise
+        # up to 3 stale entries linger in the FIFO and corrupt the NEXT
+        # transmission.
+        a = self.arr
+        c = self.count
+        if c < len(a):
+            self.pwm.duty_u16(self.duty_levels[c & 1])
+            self.count = c + 1
+            if self.ptr < len(a):
+                self.sm.put(a[self.ptr])
+                self.ptr += 1
+        if self.count >= len(a):
             self.done_evt = True
 
     def send_blocking(self, timings, max_wait_ms=500):
@@ -133,18 +141,22 @@ class _RP2_RMT:
         if len(arr) % 2 == 1:
             arr = array('I', list(arr) + [1])
         self.arr = arr
-        self.ptr = 0
         self.count = 0
         self.done_evt = False
         # Carrier starts OFF; the first IRQ (fires at the start of
-        # interval 1, ~2us after activation) switches it ON for the
-        # first mark.
+        # interval 1) switches it ON for the first mark.
         self.pwm.duty_u16(0)
-        self.sm.active(1)
+        # CRITICAL ORDER: preload the FIFO and set ptr BEFORE activating
+        # the state machine. Activating first creates a race - the SM
+        # consumes entry 1 and fires the hard IRQ mid-preload, which then
+        # re-queues duplicate entries because ptr hasn't been set yet,
+        # garbling the interval stream. Writing to an inactive SM's FIFO
+        # is safe; after activation, only the ISR feeds it.
         n = min(4, len(arr))
         for i in range(n):
             self.sm.put(arr[i])
         self.ptr = n
+        self.sm.active(1)
         start = utime.ticks_ms()
         while not self.done_evt:
             if utime.ticks_diff(utime.ticks_ms(), start) > max_wait_ms:
@@ -152,6 +164,10 @@ class _RP2_RMT:
                 self.pwm.duty_u16(0)
                 return False
             utime.sleep_ms(1)
+        # done_evt is raised at the START of the final interval (a space,
+        # carrier already off) - give it a moment to elapse so the SM
+        # drains fully before deactivation.
+        utime.sleep_ms(2 + arr[-1] // 1000)
         self.sm.active(0)
         self.pwm.duty_u16(0)
         return True
@@ -249,7 +265,7 @@ def handle(line):
 
     try:
         if cmd == "ping":
-            reply({"evt": "pong", "fw": "2.3"})
+            reply({"evt": "pong", "fw": "2.4"})
 
         elif cmd == "learn":
             reply({"evt": "learn_start"})
