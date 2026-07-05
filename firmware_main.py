@@ -7,7 +7,7 @@
 # from the IR receiver.
 #
 # PROTOCOL (host -> device), one JSON object per line:
-#   {"cmd": "ping"}                     -> {"evt":"pong","fw":"2.0"}
+#   {"cmd": "ping"}                     -> {"evt":"pong","fw":"2.1"}
 #   {"cmd": "learn"}                    -> {"evt":"learn_start"} then either
 #                                          {"evt":"captured","data":[...]} or
 #                                          {"evt":"learn_timeout"}
@@ -50,8 +50,12 @@ import ujson
 import utime
 import select
 import rp2
+import micropython
 from machine import Pin, PWM
 from array import array
+
+# Required for meaningful error reports if a hard ISR ever raises.
+micropython.alloc_emergency_exception_buf(100)
 
 # ------------------------- CONFIG (confirmed pins) --------------------------
 IR_TX_PIN = 0           # GP0 - IR Transmitter (per sbcshop PiBeam pinout table)
@@ -91,9 +95,18 @@ class _RP2_RMT:
         self.pwm = PWM(tx_pin)
         self.pwm.freq(freq)
         self.pwm.duty_u16(0)
-        self.duty_levels = (int(0xFFFF * duty_pct // 100), 0)  # (on, off)
+        self.on_duty = int(0xFFFF * duty_pct // 100)
+        # IRQ k fires at the END of interval k. Interval 1 is a MARK
+        # (carrier ON, set before the SM starts), so IRQ 1 (count=0) must
+        # switch OFF, IRQ 2 back ON, alternating: (OFF, ON) indexed by
+        # count & 1.
+        self.duty_levels = (0, self.on_duty)
+        # hard=True: toggle the carrier the instant the PIO interval ends,
+        # not whenever the soft-IRQ scheduler gets around to it. Soft
+        # scheduling latency (up to ~ms) is longer than typical IR
+        # intervals (0.5-1.7 ms), which garbles the signal completely.
         self.sm = rp2.StateMachine(sm_no, _irqtrain, freq=sm_freq)
-        rp2.PIO(0).irq(self._on_irq)
+        rp2.PIO(0).irq(self._on_irq, hard=True)
         self.arr = None
         self.ptr = 0
         self.count = 0
@@ -122,7 +135,9 @@ class _RP2_RMT:
         self.ptr = 0
         self.count = 0
         self.done_evt = False
-        self.pwm.duty_u16(0)
+        # Interval 1 is a MARK: carrier must already be ON when the SM
+        # starts timing it. The first IRQ (end of interval 1) turns it off.
+        self.pwm.duty_u16(self.on_duty)
         self.sm.active(1)
         n = min(4, len(arr))
         for i in range(n):
@@ -166,7 +181,13 @@ def _rx_isr(pin):
         _edge_count += 1
 
 
-_rx_pin.irq(handler=_rx_isr, trigger=Pin.IRQ_FALLING | Pin.IRQ_RISING)
+# hard=True is essential here: soft pin-IRQ handlers are queued (depth 1)
+# and executed by the interpreter's scheduler - edges arriving while one is
+# queued are silently DROPPED, and the queue isn't serviced at all during
+# a sleep_us() busy-wait. That combination is what limited captures to ~2
+# edges. A hard ISR timestamps every edge the instant it happens.
+_rx_pin.irq(handler=_rx_isr, trigger=Pin.IRQ_FALLING | Pin.IRQ_RISING,
+            hard=True)
 
 
 def capture_ir():
@@ -184,10 +205,12 @@ def capture_ir():
                 return None
             utime.sleep_ms(2)
         # Keep collecting until the receiver idles for FRAME_END_GAP_US
-        # or we hit the edge-count ceiling.
+        # or we hit the edge-count ceiling. (sleep_ms, not sleep_us: with
+        # a hard ISR this matters less, but sleep_ms also keeps the
+        # system serviced during the wait.)
         while _edge_count < MAX_EDGES:
             last_n = _edge_count
-            utime.sleep_us(FRAME_END_GAP_US)
+            utime.sleep_ms(FRAME_END_GAP_US // 1000)
             if _edge_count == last_n:
                 break  # no new edges arrived during that idle window
     finally:
@@ -224,7 +247,7 @@ def handle(line):
 
     try:
         if cmd == "ping":
-            reply({"evt": "pong", "fw": "2.0"})
+            reply({"evt": "pong", "fw": "2.1"})
 
         elif cmd == "learn":
             reply({"evt": "learn_start"})
