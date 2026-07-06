@@ -32,8 +32,7 @@ fi
 export DEBIAN_FRONTEND=noninteractive
 
 log "Installing Python dependencies..."
-apt-get install -y python3 python3-tk python3-pil python3-pil.imagetk \
-    python3-serial python3-pip
+apt-get install -y python3 python3-tk python3-serial python3-pip
 # mpremote (firmware deployment tool) - not in Ubuntu's repos, so via pip
 pip3 install --break-system-packages -q mpremote || \
     pip3 install -q mpremote || \

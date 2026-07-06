@@ -9,23 +9,21 @@
 #   * Auto-detects the PiBeam over USB serial (RP2040 VID 0x2E8A), with
 #     status indicator and auto-reconnect.
 #   * Devices ("remotes") shown side-by-side in a horizontally scrollable
-#     strip; each panel collapsible via its header.
+#     strip; show/hide any remote from the View menu.
 #   * Grid layout per remote: rows of 0-5 evenly spaced slots.
-#   * Edit-layout mode (pencil icon): add/remove rows, set slots per row,
-#     drag buttons between cells.
-#   * Buttons: text glyph (auto-scaled) or transparent PNG.
-#     Left-click = transmit. Right-click = context menu (Learn/Overwrite,
-#     Clear Stored Code, Update Button, Delete Button).
+#   * Edit Layout (device context menu): add/remove rows, set slots per
+#     row, drag buttons between cells; Save Layout button exits.
+#   * Buttons: named text labels. Left-click = transmit. Right-click =
+#     context menu (Learn/Overwrite, Clear Stored Code, Self-Test,
+#     Update Button, Delete Button).
+#   * View menu: UI scaling presets (75%-200%) and per-remote visibility.
 #   * Learn dialog with capture confirmation, Test-before-save, Cancel.
 #   * Config persisted to ~/.config/pibeam_remote/config.json
-#     (PNG images embedded as base64 so a single file clones a whole site).
 #     File menu: Import / Export / Backup.
 #
-# Dependencies:  python3-tk  pillow  pyserial
+# Dependencies:  python3-tk  pyserial
 # =============================================================================
 
-import base64
-import io
 import json
 import os
 import queue
@@ -34,12 +32,8 @@ import sys
 import threading
 import time
 import tkinter as tk
+import tkinter.font as tkfont
 from tkinter import ttk, filedialog, messagebox, simpledialog
-
-try:
-    from PIL import Image, ImageTk
-except ImportError:
-    sys.exit("Missing dependency: pillow  (pip install pillow)")
 
 try:
     import serial
@@ -54,13 +48,17 @@ RP2040_VID = 0x2E8A            # Raspberry Pi (MicroPython CDC)
 BAUD = 115200
 LEARN_TIMEOUT_S = 16           # slightly above firmware's 15 s
 MAX_SLOTS = 5
+SCALE_PRESETS = (75, 85, 100, 125, 150, 200)
+# Named Tk fonts whose sizes drive UI scaling
+_SCALED_FONTS = ("TkDefaultFont", "TkTextFont", "TkMenuFont",
+                 "TkHeadingFont", "TkCaptionFont")
 
 
 # ----------------------------------------------------------------------------
 # Config helpers
 # ----------------------------------------------------------------------------
 def default_config():
-    return {"remotes": []}
+    return {"remotes": [], "ui_scale": 100}
 
 
 def load_config():
@@ -77,15 +75,6 @@ def save_config(cfg):
     with open(tmp, "w") as f:
         json.dump(cfg, f, indent=1)
     os.replace(tmp, CONFIG_PATH)
-
-
-def png_to_b64(path):
-    with open(path, "rb") as f:
-        return base64.b64encode(f.read()).decode("ascii")
-
-
-def b64_to_image(b64):
-    return Image.open(io.BytesIO(base64.b64decode(b64))).convert("RGBA")
 
 
 # ----------------------------------------------------------------------------
@@ -257,7 +246,6 @@ class ButtonEditor(tk.Toplevel):
         super().__init__(app)
         self.app = app
         self.on_done = on_done
-        self.png_b64 = (initial or {}).get("image")
         self.title("Button Appearance")
         self.transient(app)
         self.grab_set()
@@ -265,56 +253,28 @@ class ButtonEditor(tk.Toplevel):
 
         frm = ttk.Frame(self, padding=12)
         frm.pack()
-        ttk.Label(frm, text="Label / glyph text:").grid(row=0, column=0,
-                                                        sticky="w")
+        ttk.Label(frm, text="Button Name:").grid(row=0, column=0, sticky="w")
         self.txt = ttk.Entry(frm, width=18)
         self.txt.insert(0, (initial or {}).get("label", ""))
         self.txt.grid(row=0, column=1, padx=6, pady=4)
-
-        self.png_lbl = ttk.Label(frm, text=self._png_state())
-        self.png_lbl.grid(row=1, column=0, sticky="w")
-        pf = ttk.Frame(frm)
-        pf.grid(row=1, column=1, sticky="w")
-        ttk.Button(pf, text="Choose PNG...",
-                   command=self.pick_png).pack(side="left")
-        ttk.Button(pf, text="Remove PNG",
-                   command=self.clear_png).pack(side="left", padx=4)
+        self.txt.focus_set()
 
         bf = ttk.Frame(frm)
-        bf.grid(row=2, column=0, columnspan=2, pady=(10, 0), sticky="ew")
+        bf.grid(row=1, column=0, columnspan=2, pady=(10, 0), sticky="ew")
         ttk.Button(bf, text="OK", command=self.ok).pack(side="left",
                                                         expand=True, fill="x")
         ttk.Button(bf, text="Cancel", command=self.destroy).pack(
             side="left", expand=True, fill="x", padx=4)
-
-    def _png_state(self):
-        return "PNG: set" if self.png_b64 else "PNG: none (text used)"
-
-    def pick_png(self):
-        path = filedialog.askopenfilename(
-            parent=self, title="Transparent PNG",
-            filetypes=[("PNG images", "*.png")])
-        if path:
-            try:
-                self.png_b64 = png_to_b64(path)
-                self.png_lbl.config(text=self._png_state())
-            except OSError as e:
-                messagebox.showerror(APP_NAME, f"Could not read PNG:\n{e}",
-                                     parent=self)
-
-    def clear_png(self):
-        self.png_b64 = None
-        self.png_lbl.config(text=self._png_state())
+        self.bind("<Return>", lambda e: self.ok())
 
     def ok(self):
         label = self.txt.get().strip()
-        if not label and not self.png_b64:
-            messagebox.showwarning(APP_NAME,
-                                   "Provide a text glyph or a PNG.",
+        if not label:
+            messagebox.showwarning(APP_NAME, "Provide a button name.",
                                    parent=self)
             return
         if self.on_done:
-            self.on_done({"label": label, "image": self.png_b64})
+            self.on_done({"label": label})
         self.destroy()
 
 
@@ -330,47 +290,34 @@ class RemotePanel(ttk.Frame):
         self.remote = remote           # dict backing this panel in config
         self.edit_mode = False
         self.drag_src = None           # (row_idx, slot_idx) during drag
-        self._imgs = {}                # keep PhotoImage refs alive
 
         # ---- header ----
         hdr = ttk.Frame(self)
         hdr.pack(fill="x")
-        self.collapse_btn = ttk.Button(hdr, width=2, text=self._carat(),
-                                       command=self.toggle_collapse)
-        self.collapse_btn.pack(side="left")
-        self.name_lbl = ttk.Label(hdr, text=remote["name"],
-                                  font=("TkDefaultFont", 11, "bold"))
+        self.name_lbl = ttk.Label(
+            hdr, text=remote["name"],
+            font=("TkDefaultFont", self.app.scaled(11), "bold"))
         self.name_lbl.pack(side="left", padx=4)
-        self.edit_btn = ttk.Button(hdr, width=3, text="\u270e\u25a6",
-                                   command=self.toggle_edit)
-        self.edit_btn.pack(side="right")
         menu_btn = ttk.Button(hdr, width=2, text="\u22ee",
                               command=self.header_menu)
         menu_btn.pack(side="right")
+        # Only visible while editing; exits edit mode (edits are already
+        # auto-saved as they happen - this is purely the exit control).
+        self.save_layout_btn = ttk.Button(hdr, text="Save Layout",
+                                          command=self.exit_edit)
 
         # ---- body ----
         self.body = ttk.Frame(self)
-        if not remote.get("collapsed"):
-            self.body.pack(fill="both", expand=True)
+        self.body.pack(fill="both", expand=True)
         self.rebuild()
 
     # ------------- header actions -------------
-    def _carat(self):
-        return "\u25b8" if self.remote.get("collapsed") else "\u25be"
-
-    def toggle_collapse(self):
-        self.remote["collapsed"] = not self.remote.get("collapsed", False)
-        if self.remote["collapsed"]:
-            self.body.forget()
-        else:
-            self.body.pack(fill="both", expand=True)
-        self.collapse_btn.config(text=self._carat())
-        self.app.save()
-
     def header_menu(self):
         m = tk.Menu(self, tearoff=0)
         m.add_command(label="Rename Device", command=self.rename)
         m.add_command(label="Add New Button", command=self.add_button)
+        if not self.edit_mode:
+            m.add_command(label="Edit Layout", command=self.enter_edit)
         m.add_separator()
         m.add_command(label="Delete Device", command=self.delete_device)
         m.tk_popup(*self.winfo_pointerxy())
@@ -392,27 +339,34 @@ class RemotePanel(ttk.Frame):
             self.app.save()
             self.app.rebuild_strip()
 
-    def toggle_edit(self):
-        self.edit_mode = not self.edit_mode
+    def enter_edit(self):
+        self.edit_mode = True
         self.drag_src = None
+        self.save_layout_btn.pack(side="right", padx=2)
+        self.rebuild()
+
+    def exit_edit(self):
+        self.edit_mode = False
+        self.drag_src = None
+        self.save_layout_btn.pack_forget()
         self.rebuild()
 
     # ------------- layout -------------
     def rebuild(self):
         for w in self.body.winfo_children():
             w.destroy()
-        self._imgs.clear()
 
+        pad = self.app.scaled(3)
         for r_idx, row in enumerate(self.remote["rows"]):
             rf = ttk.Frame(self.body)
-            rf.pack(fill="x", pady=2)
+            rf.pack(fill="x", pady=self.app.scaled(2))
             slots = row["slots"]
             for c in range(max(slots, 1)):
                 rf.columnconfigure(c, weight=1, uniform="slots")
             for s_idx in range(slots):
                 btn_cfg = row["buttons"][s_idx]
                 w = self.make_cell(rf, r_idx, s_idx, btn_cfg)
-                w.grid(row=0, column=s_idx, padx=3, sticky="nsew")
+                w.grid(row=0, column=s_idx, padx=pad, sticky="nsew")
             if self.edit_mode:
                 rc = ttk.Frame(rf)
                 rc.grid(row=0, column=max(slots, 1), padx=2)
@@ -422,7 +376,7 @@ class RemotePanel(ttk.Frame):
 
         if self.edit_mode:
             ttk.Button(self.body, text="+ Add Row",
-                       command=self.add_row).pack(pady=4)
+                       command=self.add_row).pack(pady=self.app.scaled(4))
 
     def make_cell(self, parent, r, s, cfg):
         if cfg is None:
@@ -430,19 +384,12 @@ class RemotePanel(ttk.Frame):
                 b = tk.Button(parent, text="\u00b7", relief="ridge",
                               command=lambda: self.place_or_add(r, s))
                 return b
-            return ttk.Frame(parent, height=34)  # invisible spacer
+            return ttk.Frame(parent,
+                             height=self.app.scaled(34))  # invisible spacer
         # real button
         label = cfg.get("label") or ""
-        b = tk.Button(parent, text=label, wraplength=self.PANEL_W // 3)
-        if cfg.get("image"):
-            try:
-                img = b64_to_image(cfg["image"])
-                img.thumbnail((64, 40))
-                ph = ImageTk.PhotoImage(img)
-                self._imgs[(r, s)] = ph
-                b.config(image=ph, text="", width=64, height=40)
-            except Exception:
-                pass
+        b = tk.Button(parent, text=label,
+                      wraplength=self.app.scaled(self.PANEL_W) // 3)
         if not cfg.get("code"):
             b.config(fg="gray40")     # visually flag "no code learned yet"
         if self.edit_mode:
@@ -635,7 +582,7 @@ class RemotePanel(ttk.Frame):
         cfg = self.remote["rows"][r]["buttons"][s]
         def done(newc):
             cfg["label"] = newc["label"]
-            cfg["image"] = newc["image"]
+            cfg.pop("image", None)   # clear any legacy PNG data
             self.app.save()
             self.rebuild()
         ButtonEditor(self.app, initial=cfg, on_done=done)
@@ -659,6 +606,20 @@ class App(tk.Tk):
         self.link = SerialLink()
         self.learn_dialog = None
 
+        # ---- UI scaling ----
+        # Capture each named font's original size once; scaling multiplies
+        # these bases (sizes may be negative = pixel units; sign preserved).
+        self._base_font_sizes = {}
+        for name in _SCALED_FONTS:
+            try:
+                self._base_font_sizes[name] = tkfont.nametofont(name).cget("size")
+            except tk.TclError:
+                pass
+        self.ui_scale = int(self.cfg.get("ui_scale", 100))
+        if self.ui_scale not in SCALE_PRESETS:
+            self.ui_scale = 100
+        self._apply_fonts()
+
         # menu
         mb = tk.Menu(self)
         fm = tk.Menu(mb, tearoff=0)
@@ -670,6 +631,12 @@ class App(tk.Tk):
         fm.add_separator()
         fm.add_command(label="Quit", command=self.destroy)
         mb.add_cascade(label="File", menu=fm)
+
+        # View menu is rebuilt each time it opens so the remote visibility
+        # checklist always reflects current devices.
+        self.view_menu = tk.Menu(mb, tearoff=0,
+                                 postcommand=self._rebuild_view_menu)
+        mb.add_cascade(label="View", menu=self.view_menu)
         self.config(menu=mb)
 
         # horizontally scrollable strip of panels
@@ -701,6 +668,53 @@ class App(tk.Tk):
         self.rebuild_strip()
         self.after(100, self.poll_events)
 
+    # ------------- scaling -------------
+    def scaled(self, base_px):
+        """Scale a pixel/padding value by the current UI scale."""
+        return max(1, int(round(base_px * self.ui_scale / 100)))
+
+    def _apply_fonts(self):
+        s = self.ui_scale / 100
+        for name, base in self._base_font_sizes.items():
+            try:
+                tkfont.nametofont(name).configure(
+                    size=int(round(base * s)) or (1 if base >= 0 else -1))
+            except tk.TclError:
+                pass
+
+    def set_scale(self, pct):
+        self.ui_scale = pct
+        self.cfg["ui_scale"] = pct
+        self.save()
+        self._apply_fonts()
+        self.rebuild_strip()
+        self.set_status(f"UI scale: {pct}%")
+
+    # ------------- View menu -------------
+    def _rebuild_view_menu(self):
+        m = self.view_menu
+        m.delete(0, "end")
+        scale_menu = tk.Menu(m, tearoff=0)
+        for pct in SCALE_PRESETS:
+            scale_menu.add_radiobutton(
+                label=f"{pct}%", value=pct,
+                variable=tk.IntVar(self, value=self.ui_scale),
+                command=lambda p=pct: self.set_scale(p))
+        m.add_cascade(label="Adjust Scaling", menu=scale_menu)
+        m.add_separator()
+        if not self.cfg["remotes"]:
+            m.add_command(label="(no remotes configured)", state="disabled")
+        for remote in self.cfg["remotes"]:
+            var = tk.BooleanVar(self, value=remote.get("visible", True))
+            m.add_checkbutton(
+                label=remote["name"], variable=var,
+                command=lambda r=remote, v=var: self._set_visible(r, v.get()))
+
+    def _set_visible(self, remote, visible):
+        remote["visible"] = visible
+        self.save()
+        self.rebuild_strip()
+
     def _stretch_height(self, event):
         self.canvas.itemconfigure(self._win, height=event.height)
 
@@ -708,9 +722,12 @@ class App(tk.Tk):
     def rebuild_strip(self):
         for w in self.strip.winfo_children():
             w.destroy()
+        pad = self.scaled(6)
         for remote in self.cfg["remotes"]:
+            if not remote.get("visible", True):
+                continue
             p = RemotePanel(self, remote)
-            p.pack(side="left", fill="y", padx=6, pady=6)
+            p.pack(side="left", fill="y", padx=pad, pady=pad)
 
     def add_device(self):
         name = simpledialog.askstring(APP_NAME, "New device name:",
@@ -718,7 +735,7 @@ class App(tk.Tk):
         if not name:
             return
         self.cfg["remotes"].append(
-            {"name": name, "collapsed": False,
+            {"name": name, "visible": True,
              "rows": [{"slots": 3, "buttons": [None, None, None]}]})
         self.save()
         self.rebuild_strip()

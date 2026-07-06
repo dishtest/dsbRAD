@@ -29,36 +29,44 @@ Two components:
 ## 2. Host setup (Lubuntu)
 
 ```bash
-sudo apt install python3-tk python3-pil python3-pil.imagetk python3-serial
-# (or: pip install pillow pyserial)
+sudo apt install python3-tk python3-serial
+# (or: pip install pyserial)
 sudo usermod -a -G dialout $USER    # serial-port permission; re-log after
 python3 pibeam_remote.py
 ```
 
 The status bar shows a green dot when the PiBeam is detected (auto-reconnects
-if unplugged; RP2040 devices are matched by USB vendor ID).
+if unplugged; RP2040 devices are matched by USB vendor ID), plus the running
+firmware version.
 
 ## 3. Using the app
 
 - **File → Add New Device** creates a remote panel. Panels sit side-by-side;
-  use the header arrow to collapse one, and scroll horizontally for more.
-- **Header ⋮ menu**: rename device, add button, delete device.
-- **Header ✎▦ button**: Edit Layout mode —
+  scroll horizontally for more.
+- **View → Adjust Scaling** resizes the whole UI (75%–200%) — useful when a
+  remote-desktop session lands in an awkward resolution.
+- **View menu** also lists every configured remote with a checkbox: uncheck
+  to hide a remote entirely (it takes no screen space until re-checked).
+  Visibility and scale both persist across restarts.
+- **Header ⋮ menu**: rename device, add button, **Edit Layout**, delete
+  device.
+- **Edit Layout mode** (a **Save Layout** button appears in the header;
+  click it to finish — changes save as you make them):
   - `+ Add Row`, per-row ⚙ menu to set slot count (0–5) or delete the row
   - drag buttons between cells (press, drag, release on target)
   - click an empty `·` cell to create a new button in place
 - **Left-click** a button: transmit its stored code.
   Buttons with no stored code appear grayed.
 - **Right-click** a button: Learn New Code / Overwrite Stored Code,
-  Clear Stored Code, Update Button (change glyph/PNG), Delete Button.
+  Clear Stored Code, Self-Test (loopback), Update Button (rename),
+  Delete Button.
 - **Learning**: dialog confirms when a code is captured, lets you **Test**
   (replays the captured code out the IR transmitter) before **Save**.
   Cancel any time; times out after ~15 s of no signal.
 
 ## 4. Config / site cloning
 
-Everything (devices, layout, codes, and button PNGs — embedded as base64)
-lives in one file:
+Everything (devices, layout, codes, UI scale, visibility) lives in one file:
 
 ```
 ~/.config/pibeam_remote/config.json
